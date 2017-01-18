@@ -1,7 +1,7 @@
 (ns me.canvas
   (:require-macros [cljs.core.async.macros :refer [go-loop go]]
                    [purnam.core :refer [? ?> ! !> f.n def.n do.n
-                                       obj arr def* do*n def*n f*n]])
+                                        obj arr def* do*n def*n f*n]])
   (:require [monet.canvas :as m]
             [rum.core :as r]
             [me.chans-mixin :as cm]
@@ -62,37 +62,48 @@
 (defn init-state! [s]
   (swap! (:state s)
          assoc
+         :ctx-cmds []
          :cmds [])
   s)
 
 (defn init-canvas! [s]
   (let [c (dom/query (r/dom-node s) "canvas")
-         ctx (.getContext c "2d")]
-     (set! (.-strokeStyle ctx) "rgba(0,0,0,.4)")
-     (set! (.-lineWidth ctx) 1)
-     (swap! (:state s)
-            assoc
-            :ctx ctx
-            :canvas c)
-     s))
+        ctx (.getContext c "2d")]
+    (set! (.-strokeStyle ctx) "rgba(0,0,0,.4)")
+    (set! (.-lineWidth ctx) 1)
+    (swap! (:state s)
+           assoc
+           :ctx ctx
+           :canvas c)
+    s))
+
+(declare actions)
+
+(defn act1 [s [k & args]]
+  (apply (get actions k (fn [s & _] s)) s args))
+
+(defn act [s & xs]
+  (reduce act1 s xs))
+
+(def act* (partial apply act))
 
 (def actions
   {:ctx (fn [s cmd]
           (do-ctx-cmd (:ctx s) cmd)
-          s)
+          (update s :ctx-cmds conj cmd))
 
    :clear-cmds (fn [s]
                  (assoc s :cmds []))
 
    :redraw (fn [s]
-             (apply (:dispatch s)
-                    [:clear-cmds]
-                    [:clear]
-                    (:cmds s))
+             (clear! (:canvas s))
+             (doseq [c (:ctx-cmds s)]
+               (do-ctx-cmd (:ctx s) c))
              s)
 
    :undo (fn [s]
-           (update s :cmds (comp vec butlast)))
+           (act (update s :ctx-cmds (comp vec butlast))
+                [:redraw]))
 
    :clear (fn [s]
             (clear! (:canvas s))
@@ -103,8 +114,14 @@
            (! c.height h)
            s)
 
+   :restore (fn [s]
+              (if-let [bu (:ctx-backup s)]
+                (dissoc (assoc s :ctx bu)
+                        :ctx-backup)
+                s))
+
    :save-ctx (fn [s]
-               s)})
+               (assoc s :ctx-backup (js/Object.assign #js {} (:ctx s))))})
 
 (defn dispatch [s & cmds]
   (apply (-> s :state deref :dispatch) cmds))
@@ -114,7 +131,8 @@
     {:actions actions
      :notifications {}
      ;:before #(swap! %1 update :cmds into %2)
-     :after #(swap! %1 update :cmds into %2)})
+     :after #(swap! %1 update :cmds into %2)
+     })
   {:init init-state!
    :should-update (constantly false)
    :did-mount init-canvas!}
@@ -129,13 +147,15 @@
                          (dispatch s [:redraw]))}
     "redraw"]
    [:button {:on-click (fn [_]
-                         (dispatch s [:undo] [:redraw]))}
+                         (dispatch s [:undo]))}
     "undo"]
+   [:button {:on-click (fn [_]
+                         (dispatch s [:save]))}
+    "save"]
+   [:button {:on-click (fn [_]
+                         (dispatch s [:restore]))}
+    "restore"]
    [:canvas]])
-
-(def c (canvas))
-
-(u/log c)
 
 (let [in (chan)
       out (chan)
